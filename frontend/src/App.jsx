@@ -246,11 +246,11 @@ function App() {
           <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-md shadow-slate-200/80">
             <div className="grid gap-4 lg:grid-cols-[1fr_auto_1fr] lg:items-end">
               <div>
-                <label className="mb-2 block text-sm text-slate-300">Source Currency</label>
+                <label className="mb-2 block text-sm text-slate-600">Source Currency</label>
                 <select
                   value={fromCurrency}
                   onChange={(e) => setFromCurrency(e.target.value)}
-                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-lg text-white outline-none transition focus:border-cyan-400"
+                  className="w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-lg text-slate-800 outline-none transition focus:border-cyan-500"
                 >
                   {currencies.map((currency) => (
                     <option key={`from-${currency.code}`} value={currency.code}>
@@ -265,18 +265,18 @@ function App() {
                   setFromCurrency(toCurrency);
                   setToCurrency(fromCurrency);
                 }}
-                className="flex h-12 w-12 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-cyan-400 transition hover:border-cyan-400 hover:bg-slate-700"
+                className="flex h-12 w-12 items-center justify-center rounded-full border border-slate-300 bg-slate-100 text-cyan-600 transition hover:border-cyan-400 hover:bg-slate-200"
                 aria-label="Swap currencies"
               >
                 <ArrowRightLeft className="h-5 w-5" />
               </button>
 
               <div>
-                <label className="mb-2 block text-sm text-slate-300">Target Currency</label>
+                <label className="mb-2 block text-sm text-slate-600">Target Currency</label>
                 <select
                   value={toCurrency}
                   onChange={(e) => setToCurrency(e.target.value)}
-                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-lg text-white outline-none transition focus:border-cyan-400"
+                  className="w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-lg text-slate-800 outline-none transition focus:border-cyan-500"
                 >
                   {currencies.map((currency) => (
                     <option key={`to-${currency.code}`} value={currency.code}>
@@ -289,20 +289,20 @@ function App() {
 
             <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
               <div>
-                <label className="mb-2 block text-sm text-slate-300">Amount</label>
+                <label className="mb-2 block text-sm text-slate-600">Amount</label>
                 <input
                   type="number"
                   min="0"
                   step="0.01"
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
-                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-lg text-white outline-none transition focus:border-cyan-400"
+                  className="w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-lg text-slate-800 outline-none transition focus:border-cyan-500"
                 />
               </div>
 
-              <div className="flex items-end justify-between gap-3 rounded-xl border border-slate-700 bg-slate-950 p-4">
+              <div className="flex items-end justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Current Rate</p>
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Current Rate</p>
                   <p className="mt-2 text-2xl font-semibold text-cyan-400">
                     {rate ? `1 ${fromCurrency} = ${rate} ${toCurrency}` : '---'}
                   </p>
@@ -318,16 +318,16 @@ function App() {
             </div>
 
             {(convertedAmount || convertedAmount === 0) && (
-              <div className="mt-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4">
-                <p className="text-sm uppercase tracking-[0.2em] text-emerald-300">Converted Amount</p>
-                <p className="mt-2 text-3xl font-bold text-white">
+              <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                <p className="text-sm uppercase tracking-[0.2em] text-emerald-700">Converted Amount</p>
+                <p className="mt-2 text-3xl font-bold text-slate-800">
                   {amount} {fromCurrency} = {convertedAmount} {toCurrency}
                 </p>
               </div>
             )}
 
             {error && (
-              <div className="mt-6 rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-red-300">
+              <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-3 text-red-700">
                 {error}
               </div>
             )}
@@ -383,24 +383,24 @@ function App() {
           )}
 
           <section className="grid gap-6 xl:grid-cols-[1.5fr_0.9fr]">
-            <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6">
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-200/70">
               <div className="mb-6 flex items-center justify-between">
                 <div>
-                  <p className="text-sm uppercase tracking-[0.2em] text-slate-400">Trend Analysis</p>
+                  <p className="text-sm uppercase tracking-[0.2em] text-slate-500">Trend Analysis</p>
                   <h2 className="mt-2 text-2xl font-semibold">{fromCurrency} to {toCurrency}</h2>
                 </div>
-                <div className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-sm text-cyan-300">
+                <div className="rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-sm text-cyan-700">
                   {trendSummary.change}% over 30 days
                 </div>
               </div>
 
               <div className="mb-6 grid gap-4 sm:grid-cols-2">
-                <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
-                  <p className="text-sm text-slate-400">Current Rate</p>
-                  <p className="mt-2 text-2xl font-bold text-white">{trendSummary.current}</p>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-sm text-slate-500">Current Rate</p>
+                  <p className="mt-2 text-2xl font-bold text-slate-800">{trendSummary.current}</p>
                 </div>
-                <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
-                  <p className="text-sm text-slate-400">30-Day Change</p>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-sm text-slate-500">30-Day Change</p>
                   <p className={`mt-2 text-2xl font-bold ${Number(trendSummary.change) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {trendSummary.change}%
                   </p>
@@ -426,16 +426,16 @@ function App() {
                   </ResponsiveContainer>
                 </div>
               ) : (
-                <div className="flex h-72 items-center justify-center rounded-2xl border border-dashed border-slate-700 text-slate-400">
+                <div className="flex h-72 items-center justify-center rounded-2xl border border-dashed border-slate-300 text-slate-500">
                   Loading historical trend...
                 </div>
               )}
             </div>
 
             <aside className="space-y-6">
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6">
+              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-200/70">
                 <div className="mb-4 flex items-center justify-between">
-                  <h3 className="text-xl font-semibold">Favorites</h3>
+                  <h3 className="text-xl font-semibold text-slate-800">Favorites</h3>
                   <Star className="h-5 w-5 text-yellow-300" />
                 </div>
 
@@ -447,11 +447,11 @@ function App() {
                         setFromCurrency(pair.from_currency);
                         setToCurrency(pair.to_currency);
                       }}
-                      className="flex w-full items-center justify-between rounded-2xl border border-slate-700 bg-slate-950 p-3 text-left transition hover:border-cyan-400 hover:bg-slate-800"
+                      className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left transition hover:border-cyan-400 hover:bg-slate-100"
                     >
                       <div>
-                        <p className="text-sm text-slate-400">Pair</p>
-                        <p className="font-medium text-white">
+                        <p className="text-sm text-slate-500">Pair</p>
+                        <p className="font-medium text-slate-800">
                           {pair.from_currency} → {pair.to_currency}
                         </p>
                       </div>
@@ -461,26 +461,26 @@ function App() {
                 </div>
               </div>
 
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6">
+              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-200/70">
                 <div className="mb-4 flex items-center justify-between">
-                  <h3 className="text-xl font-semibold">Recent History</h3>
+                  <h3 className="text-xl font-semibold text-slate-800">Recent History</h3>
                   <History className="h-5 w-5 text-cyan-400" />
                 </div>
 
                 <div className="space-y-3">
                   {history.length ? (
                     history.map((item, index) => (
-                      <div key={`${item.created_at}-${index}`} className="rounded-2xl border border-slate-700 bg-slate-950 p-3">
-                        <p className="text-xs text-slate-400">
+                      <div key={`${item.created_at}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-xs text-slate-500">
                           {new Date(item.created_at).toLocaleString()}
                         </p>
-                        <p className="mt-1 font-medium text-white">
+                        <p className="mt-1 font-medium text-slate-800">
                           {item.amount} {item.from_currency} → {item.result.toFixed(2)} {item.to_currency}
                         </p>
                       </div>
                     ))
                   ) : (
-                    <p className="text-slate-400">No recent conversions yet.</p>
+                    <p className="text-slate-500">No recent conversions yet.</p>
                   )}
                 </div>
               </div>
