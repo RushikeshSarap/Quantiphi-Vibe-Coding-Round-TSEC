@@ -5,7 +5,8 @@ A full-stack currency conversion application built with Node.js + Express on the
 - Dual currency converter with side-by-side source/target selectors
 - Live exchange rates from the ExchangeRate API
 - 30-day historical rate trend analysis
-- SQLite-backed local persistence for conversion history and favorites
+- SQLite-backed local persistence for conversion history and favorites when available
+- In-memory fallback caching so the app still works without a separate SQLite install
 - Regional and major currency support
 - Favorites list for quick repeated lookups
 
@@ -36,6 +37,8 @@ Before running the app, you need to create a valid ExchangeRate API key.
 
    VITE_API_URL=http://localhost:5000
 
+> SQLite is now optional. If you do not have SQLite installed, the app will still run using in-memory caching for rates, favorites, and recent history. If you want persistent local storage, install SQLite3 or keep the optional dependency available during setup.
+
 > Without the ExchangeRate API key, the live conversion endpoints will return an error and the app cannot fetch fresh conversion data.
 
 ## Installation
@@ -45,6 +48,8 @@ From the root of the project:
 ```bash
 npm install
 ```
+
+No separate SQLite download is required for the app to work. If SQLite is unavailable, the backend automatically falls back to in-memory persistence for cached exchange rates, favorites, and recent conversion history.
 
 ## Run the App
 
@@ -81,6 +86,6 @@ npm run start
 
 ## Notes
 
-- The app stores recent conversion history and favorites locally in `backend/currency_app.db`
-- The SQLite database is created automatically when the backend starts
+- When SQLite is available, the app stores recent conversion history and favorites locally in `backend/currency_app.db`
+- When SQLite is not available, the app uses in-memory storage instead, so it still runs without a separate SQLite installation
 - If you do not provide a valid API key, the app will still run, but live conversion and historical endpoints will be unavailable until you add one

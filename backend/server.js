@@ -1,28 +1,63 @@
 const express = require('express');
 const cors = require('cors');
-const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const dotenv = require('dotenv');
 
-dotenv.config();
+dotenv.config({ path: path.join(__dirname, '.env') });
+
+let sqlite3 = null;
+
+try {
+  sqlite3 = require('sqlite3').verbose();
+} catch (error) {
+  console.warn('SQLite3 package is not installed. Falling back to in-memory caching and session-only persistence.');
+}
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const API_KEY = process.env.EXCHANGE_RATE_API_KEY;
 const DB_PATH = path.join(__dirname, 'currency_app.db');
+const RATE_CACHE_TTL_MS = 60 * 60 * 1000;
+
+const inMemoryRateCache = new Map();
+const inMemoryHistory = [];
+const inMemoryFavorites = [];
 
 app.use(cors());
 app.use(express.json());
 
+function migrateRateCacheTable(localDb) {
+  localDb.all('PRAGMA table_info(rate_cache)', (err, columns) => {
+    if (err) {
+      console.error('Failed to inspect rate_cache schema:', err.message);
+      return;
+    }
+
+    const hasExpiresAt = columns.some((column) => column.name === 'expires_at');
+
+    if (!hasExpiresAt) {
+      localDb.run('ALTER TABLE rate_cache ADD COLUMN expires_at TEXT', (alterErr) => {
+        if (alterErr) {
+          console.error('Failed to migrate rate_cache table:', alterErr.message);
+        }
+      });
+    }
+  });
+}
+
 function initDB() {
-  const db = new sqlite3.Database(DB_PATH, (err) => {
+  if (!sqlite3) {
+    return null;
+  }
+
+  const localDb = new sqlite3.Database(DB_PATH, (err) => {
     if (err) {
       console.error('Failed to open SQLite database:', err.message);
       return;
     }
 
-    db.serialize(() => {
-      db.run(`
+    localDb.serialize(() => {
+      localDb.run(`
         CREATE TABLE IF NOT EXISTS conversions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           from_currency TEXT NOT NULL,
@@ -34,7 +69,7 @@ function initDB() {
         )
       `);
 
-      db.run(`
+      localDb.run(`
         CREATE TABLE IF NOT EXISTS favorites (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           from_currency TEXT NOT NULL,
@@ -44,19 +79,22 @@ function initDB() {
         )
       `);
 
-      db.run(`
+      localDb.run(`
         CREATE TABLE IF NOT EXISTS rate_cache (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           base_currency TEXT NOT NULL,
           conversion_rates TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(base_currency)
         )
       `);
+
+      migrateRateCacheTable(localDb);
     });
   });
 
-  return db;
+  return localDb;
 }
 
 const db = initDB();
@@ -71,8 +109,182 @@ const regionalCurrencies = [
 
 const supportedCurrencies = [...new Set([...majorCurrencies, ...regionalCurrencies])].sort();
 
+function normalizeCurrency(currency) {
+  return String(currency || '').toUpperCase();
+}
+
+function extractRatesFromCurrencyApiResponse(data) {
+  if (!data || !data.data || typeof data.data !== 'object') {
+    return null;
+  }
+
+  const rates = {};
+
+  Object.entries(data.data).forEach(([currency, payload]) => {
+    const rawValue = payload && typeof payload === 'object' ? payload.value : payload;
+
+    if (rawValue !== undefined && rawValue !== null) {
+      rates[currency] = Number(rawValue);
+    }
+  });
+
+  return Object.keys(rates).length ? rates : null;
+}
+
+function getTodayDateKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function saveRateCache(baseCurrency, rates, ttlMs = RATE_CACHE_TTL_MS) {
+  const normalized = normalizeCurrency(baseCurrency);
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+  const dateKey = getTodayDateKey();
+
+  inMemoryRateCache.set(normalized, { rates, expiresAt, dateKey });
+
+  if (!db) {
+    return;
+  }
+
+  db.run(
+    `INSERT OR REPLACE INTO rate_cache (base_currency, conversion_rates, expires_at, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
+    [normalized, JSON.stringify(rates), expiresAt],
+    (err) => {
+      if (err) {
+        console.error('Failed to write rate cache:', err.message);
+      }
+    }
+  );
+}
+
+function getCachedRateEntry(baseCurrency) {
+  const normalized = normalizeCurrency(baseCurrency);
+  const todayDateKey = getTodayDateKey();
+
+  const memoryEntry = inMemoryRateCache.get(normalized);
+
+  if (memoryEntry && memoryEntry.dateKey === todayDateKey) {
+    return Promise.resolve(memoryEntry.rates);
+  }
+
+  if (memoryEntry) {
+    inMemoryRateCache.delete(normalized);
+  }
+
+  if (!db) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    db.get(
+      `SELECT conversion_rates, created_at FROM rate_cache WHERE base_currency = ? ORDER BY created_at DESC LIMIT 1`,
+      [normalized],
+      (err, row) => {
+        if (err) {
+          console.error('Failed to read rate cache:', err.message);
+          return resolve(null);
+        }
+
+        if (!row) {
+          return resolve(null);
+        }
+
+        const cachedDateKey = row.created_at ? row.created_at.slice(0, 10) : null;
+
+        if (cachedDateKey !== todayDateKey) {
+          db.run(`DELETE FROM rate_cache WHERE base_currency = ?`, [normalized]);
+          return resolve(null);
+        }
+
+        try {
+          const rates = JSON.parse(row.conversion_rates);
+          inMemoryRateCache.set(normalized, { rates, dateKey: cachedDateKey });
+          resolve(rates);
+        } catch (parseError) {
+          resolve(null);
+        }
+      }
+    );
+  });
+}
+
+function addConversionHistory(entry) {
+  const historyEntry = {
+    ...entry,
+    created_at: new Date().toISOString()
+  };
+
+  inMemoryHistory.unshift(historyEntry);
+
+  if (inMemoryHistory.length > 20) {
+    inMemoryHistory.length = 20;
+  }
+
+  if (!db) {
+    return;
+  }
+
+  db.run(
+    `INSERT INTO conversions (from_currency, to_currency, amount, result, rate) VALUES (?, ?, ?, ?, ?)`,
+    [entry.fromCurrency, entry.toCurrency, entry.amount, entry.result, entry.rate],
+    (err) => {
+      if (err) {
+        console.error('Failed to store conversion history:', err.message);
+      }
+    }
+  );
+}
+
+function addFavorite(fromCurrency, toCurrency) {
+  if (!db) {
+    const alreadyExists = inMemoryFavorites.some(
+      (favorite) => favorite.from_currency === fromCurrency && favorite.to_currency === toCurrency
+    );
+
+    if (!alreadyExists) {
+      inMemoryFavorites.unshift({ from_currency: fromCurrency, to_currency: toCurrency });
+    }
+
+    return;
+  }
+
+  db.run(
+    `INSERT OR IGNORE INTO favorites (from_currency, to_currency) VALUES (?, ?)`,
+    [fromCurrency, toCurrency],
+    (err) => {
+      if (err) {
+        console.error('Failed to save favorite:', err.message);
+      }
+    }
+  );
+}
+
+function removeFavorite(fromCurrency, toCurrency) {
+  if (!db) {
+    const index = inMemoryFavorites.findIndex(
+      (favorite) => favorite.from_currency === fromCurrency && favorite.to_currency === toCurrency
+    );
+
+    if (index !== -1) {
+      inMemoryFavorites.splice(index, 1);
+    }
+
+    return;
+  }
+
+  db.run(
+    `DELETE FROM favorites WHERE from_currency = ? AND to_currency = ?`,
+    [fromCurrency, toCurrency],
+    (err) => {
+      if (err) {
+        console.error('Failed to remove favorite:', err.message);
+      }
+    }
+  );
+}
+
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', persistenceMode: db ? 'sqlite' : 'memory' });
 });
 
 app.get('/api/currencies', (req, res) => {
@@ -80,7 +292,7 @@ app.get('/api/currencies', (req, res) => {
 });
 
 app.get('/api/rates', async (req, res) => {
-  const { base = 'USD' } = req.query;
+  const base = normalizeCurrency(req.query.base || 'USD');
 
   if (!API_KEY) {
     return res.status(500).json({
@@ -88,23 +300,47 @@ app.get('/api/rates', async (req, res) => {
     });
   }
 
+  const cachedRates = await getCachedRateEntry(base);
+
+  if (cachedRates) {
+    return res.json({
+      base,
+      rates: cachedRates,
+      date: new Date().toISOString(),
+      fromCache: true
+    });
+  }
+
   try {
-    const response = await fetch(`https://v6.exchangerate-api.com/v6/${API_KEY}/latest/${base}`);
+    const response = await fetch(`https://api.currencyapi.com/v3/latest?apikey=${API_KEY}&base_currency=${base}`);
 
     if (!response.ok) {
-      throw new Error('Failed to fetch live rates from ExchangeRate API');
+      const text = await response.text();
+      throw new Error(text || 'Failed to fetch live rates from CurrencyAPI');
     }
 
-    const data = await response.json();
+    const text = await response.text();
+    let data;
 
-    if (!data.conversion_rates) {
+    try {
+      data = JSON.parse(text);
+    } catch (parseError) {
+      throw new Error('Invalid JSON received from CurrencyAPI');
+    }
+
+    const rates = extractRatesFromCurrencyApiResponse(data);
+
+    if (!rates) {
       throw new Error('Invalid API response format');
     }
 
+    saveRateCache(base, rates);
+
     res.json({
       base,
-      rates: data.conversion_rates,
-      date: data.time_last_update_utc || new Date().toISOString()
+      rates,
+      date: data.meta?.last_updated_at || new Date().toISOString(),
+      fromCache: false
     });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Unable to fetch live rates' });
@@ -132,15 +368,24 @@ app.get('/api/historical', async (req, res) => {
       const formattedDate = date.toISOString().slice(0, 10);
 
       const response = await fetch(
-        `https://v6.exchangerate-api.com/v6/${API_KEY}/history/${base}/${formattedDate}`
+        `https://api.currencyapi.com/v3/historical?apikey=${API_KEY}&date=${formattedDate}&base_currency=${base}&currencies=${target}`
       );
 
       if (!response.ok) {
         continue;
       }
 
-      const data = await response.json();
-      const rate = data.conversion_rates?.[target] || null;
+      const text = await response.text();
+      let data;
+
+      try {
+        data = JSON.parse(text);
+      } catch (parseError) {
+        continue;
+      }
+
+      const rates = extractRatesFromCurrencyApiResponse(data);
+      const rate = rates?.[target] || null;
 
       if (rate) {
         history.push({
@@ -160,14 +405,8 @@ app.get('/api/historical', async (req, res) => {
   }
 });
 
-app.post('/api/convert', (req, res) => {
+app.post('/api/convert', async (req, res) => {
   const { fromCurrency, toCurrency, amount } = req.body;
-
-  if (!API_KEY) {
-    return res.status(500).json({
-      error: 'Missing EXCHANGE_RATE_API_KEY. Please add your ExchangeRate API key in backend/.env.'
-    });
-  }
 
   if (!fromCurrency || !toCurrency || amount === undefined) {
     return res.status(400).json({ error: 'fromCurrency, toCurrency, and amount are required.' });
@@ -179,75 +418,69 @@ app.post('/api/convert', (req, res) => {
     return res.status(400).json({ error: 'Amount must be a valid number.' });
   }
 
-  db.serialize(() => {
-    db.get(
-      `SELECT conversion_rates FROM rate_cache WHERE base_currency = ? AND created_at >= datetime('now', '-1 hour') LIMIT 1`,
-      [fromCurrency],
-      async (err, row) => {
-        if (err) {
-          return res.status(500).json({ error: 'Failed to read cache.' });
-        }
+  if (!API_KEY) {
+    return res.status(500).json({
+      error: 'Missing EXCHANGE_RATE_API_KEY. Please add your ExchangeRate API key in backend/.env.'
+    });
+  }
 
-        if (row && row.conversion_rates) {
-          const rates = JSON.parse(row.conversion_rates);
-          const rate = rates[toCurrency] || 0;
-          const result = numericAmount * rate;
+  try {
+    let rates = await getCachedRateEntry(fromCurrency);
 
-          db.run(
-            `INSERT INTO conversions (from_currency, to_currency, amount, result, rate) VALUES (?, ?, ?, ?, ?)`,
-            [fromCurrency, toCurrency, numericAmount, result, rate],
-            (insertErr) => {
-              if (insertErr) {
-                return res.status(500).json({ error: 'Failed to store conversion history.' });
-              }
+    if (!rates) {
+      const response = await fetch(`https://api.currencyapi.com/v3/latest?apikey=${API_KEY}&base_currency=${fromCurrency}`);
 
-              return res.json({ rate, result, amount: numericAmount, fromCurrency, toCurrency });
-            }
-          );
-          return;
-        }
-
-        try {
-          const response = await fetch(`https://v6.exchangerate-api.com/v6/${API_KEY}/latest/${fromCurrency}`);
-          const data = await response.json();
-
-          if (!data.conversion_rates || !data.conversion_rates[toCurrency]) {
-            return res.status(400).json({ error: 'Unsupported currency conversion.' });
-          }
-
-          const rate = data.conversion_rates[toCurrency];
-          const result = numericAmount * rate;
-
-          db.run(
-            `INSERT INTO conversions (from_currency, to_currency, amount, result, rate) VALUES (?, ?, ?, ?, ?)`,
-            [fromCurrency, toCurrency, numericAmount, result, rate],
-            (insertErr) => {
-              if (insertErr) {
-                return res.status(500).json({ error: 'Failed to store conversion history.' });
-              }
-
-              db.run(
-                `INSERT OR REPLACE INTO rate_cache (base_currency, conversion_rates, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)`,
-                [fromCurrency, JSON.stringify(data.conversion_rates)],
-                (cacheErr) => {
-                  if (cacheErr) {
-                    console.error('Failed to store rate cache:', cacheErr.message);
-                  }
-
-                  return res.json({ rate, result, amount: numericAmount, fromCurrency, toCurrency });
-                }
-              );
-            }
-          );
-        } catch (error) {
-          res.status(500).json({ error: error.message || 'Unable to convert currency.' });
-        }
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || 'Failed to fetch live rates from CurrencyAPI');
       }
-    );
-  });
+
+      const text = await response.text();
+      let data;
+
+      try {
+        data = JSON.parse(text);
+      } catch (parseError) {
+        throw new Error('Invalid JSON received from CurrencyAPI');
+      }
+
+      const parsedRates = extractRatesFromCurrencyApiResponse(data);
+
+      if (!parsedRates) {
+        throw new Error('Invalid API response format');
+      }
+
+      rates = parsedRates;
+      saveRateCache(fromCurrency, rates);
+    }
+
+    const rate = rates[toCurrency];
+
+    if (!rate) {
+      return res.status(400).json({ error: 'Unsupported currency conversion.' });
+    }
+
+    const result = numericAmount * rate;
+
+    addConversionHistory({
+      fromCurrency,
+      toCurrency,
+      amount: numericAmount,
+      result,
+      rate
+    });
+
+    return res.json({ rate, result, amount: numericAmount, fromCurrency, toCurrency });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Unable to convert currency.' });
+  }
 });
 
 app.get('/api/history', (req, res) => {
+  if (!db) {
+    return res.json({ history: inMemoryHistory.slice(0, 20) });
+  }
+
   db.all(
     `SELECT from_currency, to_currency, amount, result, rate, created_at FROM conversions ORDER BY created_at DESC LIMIT 20`,
     [],
@@ -262,6 +495,10 @@ app.get('/api/history', (req, res) => {
 });
 
 app.get('/api/favorites', (req, res) => {
+  if (!db) {
+    return res.json({ favorites: inMemoryFavorites });
+  }
+
   db.all(
     `SELECT from_currency, to_currency FROM favorites ORDER BY created_at DESC`,
     [],
@@ -280,6 +517,11 @@ app.post('/api/favorites', (req, res) => {
 
   if (!fromCurrency || !toCurrency) {
     return res.status(400).json({ error: 'fromCurrency and toCurrency are required.' });
+  }
+
+  if (!db) {
+    addFavorite(fromCurrency, toCurrency);
+    return res.json({ success: true });
   }
 
   db.run(
@@ -302,6 +544,11 @@ app.delete('/api/favorites', (req, res) => {
     return res.status(400).json({ error: 'fromCurrency and toCurrency are required.' });
   }
 
+  if (!db) {
+    removeFavorite(fromCurrency, toCurrency);
+    return res.json({ success: true, deleted: true });
+  }
+
   db.run(
     `DELETE FROM favorites WHERE from_currency = ? AND to_currency = ?`,
     [fromCurrency, toCurrency],
@@ -317,4 +564,9 @@ app.delete('/api/favorites', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Backend server listening on http://localhost:${PORT}`);
+  if (db) {
+    console.log('SQLite persistence enabled.');
+  } else {
+    console.log('SQLite not available; using in-memory cache and session-only persistence.');
+  }
 });
