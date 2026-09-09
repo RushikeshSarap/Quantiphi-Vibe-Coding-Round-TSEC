@@ -6,8 +6,21 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const defaultCurrencies = ['USD', 'EUR', 'GBP', 'INR', 'JPY', 'AED', 'SAR', 'AUD', 'CAD', 'CHF'];
 
+const normalizeCurrencyOptions = (items) =>
+  items.map((currency) => {
+    if (typeof currency === 'string') {
+      return { code: currency, name: currency };
+    }
+
+    return {
+      code: currency.code || currency.currency || currency.id,
+      name: currency.name || currency.currency || currency.code || currency.id,
+      symbol: currency.symbol || ''
+    };
+  });
+
 function App() {
-  const [currencies, setCurrencies] = useState(defaultCurrencies);
+  const [currencies, setCurrencies] = useState(normalizeCurrencyOptions(defaultCurrencies));
   const [fromCurrency, setFromCurrency] = useState('USD');
   const [toCurrency, setToCurrency] = useState('INR');
   const [amount, setAmount] = useState('100');
@@ -16,6 +29,9 @@ function App() {
   const [favorites, setFavorites] = useState([]);
   const [history, setHistory] = useState([]);
   const [historicalData, setHistoricalData] = useState([]);
+  const [travelMode, setTravelMode] = useState(false);
+  const [travelBudget, setTravelBudget] = useState([]);
+  const [travelLoading, setTravelLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -31,12 +47,19 @@ function App() {
     }
   }, [fromCurrency, toCurrency]);
 
+  useEffect(() => {
+    if (travelMode) {
+      loadTravelBudgetComparison();
+    }
+  }, [travelMode, fromCurrency, amount]);
+
   const loadCurrencies = async () => {
     try {
       const response = await fetch(`${API_BASE}/api/currencies`);
       const data = await response.json();
+
       if (data.currencies?.length) {
-        setCurrencies(data.currencies);
+        setCurrencies(normalizeCurrencyOptions(data.currencies));
       }
     } catch (err) {
       console.error(err);
@@ -60,6 +83,33 @@ function App() {
       setHistory(data.history || []);
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const loadTravelBudgetComparison = async () => {
+    if (!travelMode) {
+      return;
+    }
+
+    setTravelLoading(true);
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/travel-budget?base=${fromCurrency}&amount=${amount}`
+      );
+      const data = await response.json();
+
+      if (response.ok) {
+        setTravelBudget(data.comparison || []);
+      } else {
+        setTravelBudget([]);
+        setError(data.error || 'Unable to load travel budget');
+      }
+    } catch (err) {
+      setTravelBudget([]);
+      setError('Unable to load travel budget');
+    } finally {
+      setTravelLoading(false);
     }
   };
 
@@ -168,24 +218,32 @@ function App() {
       ];
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="min-h-screen bg-slate-100 text-slate-800">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <header className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <p className="text-sm uppercase tracking-[0.25em] text-cyan-400">Finance Suite</p>
             <h1 className="mt-2 text-3xl font-bold md:text-4xl">Currency Converter</h1>
           </div>
-          <button
-            onClick={handleConvert}
-            className="inline-flex items-center justify-center rounded-xl bg-cyan-500 px-5 py-3 font-medium text-slate-950 transition hover:bg-cyan-400"
-          >
-            <RefreshCw className="mr-2 h-4 w-4" />
-            Convert Now
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={() => setTravelMode((prev) => !prev)}
+              className="inline-flex items-center justify-center rounded-xl border border-cyan-500 bg-cyan-50 px-5 py-3 font-medium text-cyan-700 transition hover:bg-cyan-100"
+            >
+              {travelMode ? 'Exit Travel Budgeting' : 'Travel Budgeting'}
+            </button>
+            <button
+              onClick={handleConvert}
+              className="inline-flex items-center justify-center rounded-xl bg-cyan-500 px-5 py-3 font-medium text-slate-950 transition hover:bg-cyan-400"
+            >
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Convert Now
+            </button>
+          </div>
         </header>
 
         <main className="space-y-8">
-          <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl shadow-slate-950/60 backdrop-blur-md">
+          <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-md shadow-slate-200/80">
             <div className="grid gap-4 lg:grid-cols-[1fr_auto_1fr] lg:items-end">
               <div>
                 <label className="mb-2 block text-sm text-slate-300">Source Currency</label>
@@ -195,8 +253,8 @@ function App() {
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-lg text-white outline-none transition focus:border-cyan-400"
                 >
                   {currencies.map((currency) => (
-                    <option key={`from-${currency}`} value={currency}>
-                      {currency}
+                    <option key={`from-${currency.code}`} value={currency.code}>
+                      {currency.code} - {currency.name}
                     </option>
                   ))}
                 </select>
@@ -221,8 +279,8 @@ function App() {
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-lg text-white outline-none transition focus:border-cyan-400"
                 >
                   {currencies.map((currency) => (
-                    <option key={`to-${currency}`} value={currency}>
-                      {currency}
+                    <option key={`to-${currency.code}`} value={currency.code}>
+                      {currency.code} - {currency.name}
                     </option>
                   ))}
                 </select>
@@ -274,6 +332,55 @@ function App() {
               </div>
             )}
           </section>
+
+          {travelMode && (
+            <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-md shadow-slate-200/80">
+              <div className="mb-4 flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.2em] text-slate-500">Travel Budgeting</p>
+                  <h2 className="mt-2 text-2xl font-semibold text-slate-800">
+                    Compare your budget in 5 major currencies
+                  </h2>
+                </div>
+                <div className="rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-sm text-cyan-700">
+                  Base: {fromCurrency}
+                </div>
+              </div>
+
+              {travelLoading ? (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-slate-500">
+                  Loading budget comparison...
+                </div>
+              ) : travelBudget.length ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full border-separate border-spacing-y-2">
+                    <thead>
+                      <tr className="text-left text-sm text-slate-500">
+                        <th className="px-3 py-2 font-medium">Currency</th>
+                        <th className="px-3 py-2 font-medium">Rate</th>
+                        <th className="px-3 py-2 font-medium">Equivalent Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {travelBudget.map((item) => (
+                        <tr key={item.currency} className="rounded-xl bg-slate-50">
+                          <td className="rounded-l-xl px-3 py-3 font-medium text-slate-800">{item.currency}</td>
+                          <td className="px-3 py-3 text-slate-600">{item.rate ? item.rate.toFixed(4) : 'N/A'}</td>
+                          <td className="rounded-r-xl px-3 py-3 text-slate-800">
+                            {item.equivalent !== null ? `${item.equivalent.toFixed(2)}` : 'N/A'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-slate-500">
+                  No travel comparison available yet.
+                </div>
+              )}
+            </section>
+          )}
 
           <section className="grid gap-6 xl:grid-cols-[1.5fr_0.9fr]">
             <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6">

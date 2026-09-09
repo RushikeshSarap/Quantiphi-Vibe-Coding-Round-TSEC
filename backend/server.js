@@ -108,9 +108,41 @@ const regionalCurrencies = [
 ];
 
 const supportedCurrencies = [...new Set([...majorCurrencies, ...regionalCurrencies])].sort();
+const travelBudgetCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'AUD'];
 
 function normalizeCurrency(currency) {
   return String(currency || '').toUpperCase();
+}
+
+function formatCurrencyOptions(currencyData) {
+  if (!currencyData) {
+    return [];
+  }
+
+  const items = Array.isArray(currencyData)
+    ? currencyData
+    : Object.entries(currencyData);
+
+  return items
+    .map(([code, details]) => {
+      if (typeof code === 'string' && typeof details === 'string') {
+        return { code: normalizeCurrency(code), name: details };
+      }
+
+      const normalizedCode = normalizeCurrency(code || details?.code || details?.currency || details?.id || '');
+
+      if (!normalizedCode) {
+        return null;
+      }
+
+      return {
+        code: normalizedCode,
+        name: details?.name || details?.currency || details?.country || normalizedCode,
+        symbol: details?.symbol || ''
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.code.localeCompare(b.code));
 }
 
 function extractRatesFromCurrencyApiResponse(data) {
@@ -287,8 +319,42 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', persistenceMode: db ? 'sqlite' : 'memory' });
 });
 
-app.get('/api/currencies', (req, res) => {
-  res.json({ currencies: supportedCurrencies });
+app.get('/api/currencies', async (req, res) => {
+  const fallbackCurrencies = supportedCurrencies.map((currency) => ({
+    code: currency,
+    name: currency
+  }));
+
+  if (!API_KEY) {
+    return res.json({ currencies: fallbackCurrencies });
+  }
+
+  try {
+    const response = await fetch(`https://api.currencyapi.com/v3/currencies?apikey=${API_KEY}`);
+
+    if (!response.ok) {
+      throw new Error('Failed to fetch currencies from CurrencyAPI');
+    }
+
+    const text = await response.text();
+    let data;
+
+    try {
+      data = JSON.parse(text);
+    } catch (parseError) {
+      throw new Error('Invalid currencies response from CurrencyAPI');
+    }
+
+    const formattedCurrencies = formatCurrencyOptions(data?.data || data?.currencies || {});
+
+    if (!formattedCurrencies.length) {
+      throw new Error('No currencies returned by CurrencyAPI');
+    }
+
+    return res.json({ currencies: formattedCurrencies });
+  } catch (error) {
+    return res.json({ currencies: fallbackCurrencies, warning: error.message });
+  }
 });
 
 app.get('/api/rates', async (req, res) => {
@@ -344,6 +410,71 @@ app.get('/api/rates', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Unable to fetch live rates' });
+  }
+});
+
+app.get('/api/travel-budget', async (req, res) => {
+  const base = normalizeCurrency(req.query.base || 'USD');
+  const amount = Number(req.query.amount ?? 0);
+
+  if (!Number.isFinite(amount) || amount < 0) {
+    return res.status(400).json({ error: 'A valid non-negative amount is required.' });
+  }
+
+  if (!API_KEY) {
+    return res.status(500).json({
+      error: 'Missing EXCHANGE_RATE_API_KEY. Please set it in backend/.env and use a valid API key.'
+    });
+  }
+
+  try {
+    let rates = await getCachedRateEntry(base);
+
+    if (!rates) {
+      const response = await fetch(
+        `https://api.currencyapi.com/v3/latest?apikey=${API_KEY}&base_currency=${base}`
+      );
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || 'Failed to fetch live rates from CurrencyAPI');
+      }
+
+      const text = await response.text();
+      let data;
+
+      try {
+        data = JSON.parse(text);
+      } catch (parseError) {
+        throw new Error('Invalid JSON received from CurrencyAPI');
+      }
+
+      rates = extractRatesFromCurrencyApiResponse(data);
+
+      if (!rates) {
+        throw new Error('Invalid API response format');
+      }
+
+      saveRateCache(base, rates);
+    }
+
+    const comparison = travelBudgetCurrencies.map((currency) => {
+      const rate = rates[currency];
+
+      return {
+        currency,
+        rate: rate ?? null,
+        equivalent: rate !== undefined && rate !== null ? Number((amount * rate).toFixed(2)) : null
+      };
+    });
+
+    return res.json({
+      base,
+      amount,
+      comparison
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Unable to generate travel budget comparison.' });
   }
 });
 
